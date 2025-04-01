@@ -11,6 +11,7 @@ Vagrant.configure("2") do |config|
     vb.gui = false
   end
 
+  # Docker
   config.vm.provision "shell", inline: <<-SHELL
     apt-get update
     apt-get upgrade -y
@@ -26,5 +27,13 @@ Vagrant.configure("2") do |config|
     systemctl enable docker
     systemctl start docker
     usermod -aG docker vagrant
+  SHELL
+
+  #Podman
+  config.vm.provision "shell", inline: <<-SHELL
+    apt-get update
+    apt-get install -y podman
+    usermod -aG root vagrant
+    apt-get install -y podman-compose
   SHELL
 end
