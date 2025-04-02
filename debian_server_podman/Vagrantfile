@@ -1,0 +1,28 @@
+Vagrant.configure("2") do |config|
+  config.vm.box = "debian/bookworm64"
+  config.vm.network "public_network"
+  config.vm.network "forwarded_port", guest: 8080, host: 8080
+  config.vm.synced_folder ".", "/vagrant_data", disabled: true
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name = "debian12_server_podman"
+    vb.memory = "12288"
+    vb.cpus = 4
+    vb.gui = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    apt-get update -y
+    apt-get install -y curl podman podman-compose
+
+    # Установка uv (от имени root)
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+
+    mkdir -p /usr/local/bin
+    ln -sf /root/.local/bin/uv /usr/local/bin/uv
+    ln -sf /root/.local/bin/uvx /usr/local/bin/uvx
+
+    sudo -u vagrant bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/vagrant/.bashrc
+  SHELL
+end
