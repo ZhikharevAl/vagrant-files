@@ -1,28 +1,36 @@
 Vagrant.configure("2") do |config|
   config.vm.box = "debian/bookworm64"
-  config.vm.network "public_network"
+  config.vm.hostname = "podman-server"
+  
+  config.vm.network "public_network", auto_config: true
   config.vm.network "forwarded_port", guest: 8080, host: 8080
+
   config.vm.synced_folder ".", "/vagrant_data", disabled: true
+  config.ssh.insert_key = false
 
   config.vm.provider "virtualbox" do |vb|
     vb.name = "debian12_server_podman"
-    vb.memory = "12288"
+    vb.memory = 12288
     vb.cpus = 4
     vb.gui = false
+    
+    vb.customize ["modifyvm", :id, "--ioapic", "on"]
+    vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
   end
 
   config.vm.provision "shell", inline: <<-SHELL
     apt-get update -y
-    apt-get install -y curl podman podman-compose
-
-    # Установка uv (от имени root)
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-
-    mkdir -p /usr/local/bin
-    ln -sf /root/.local/bin/uv /usr/local/bin/uv
-    ln -sf /root/.local/bin/uvx /usr/local/bin/uvx
-
+    apt-get install -y curl git podman podman-compose
+    
     sudo -u vagrant bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/vagrant/.bashrc
+    
+    mkdir -p /home/vagrant/.config/containers
+    echo -e '[storage]\ndriver = "overlay"' > /home/vagrant/.config/containers/storage.conf
+    
+    apt-get autoremove -y
+    apt-get clean
   SHELL
+
+  config.vm.post_up_message = "Сервер готов! Используйте 'vagrant ssh' для подключения"
 end
