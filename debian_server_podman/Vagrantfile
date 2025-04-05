@@ -1,36 +1,152 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
 Vagrant.configure("2") do |config|
   config.vm.box = "debian/bookworm64"
   config.vm.hostname = "podman-server"
-  
-  config.vm.network "public_network", auto_config: true
-  config.vm.network "forwarded_port", guest: 8080, host: 8080
 
-  config.vm.synced_folder ".", "/vagrant_data", disabled: true
-  config.ssh.insert_key = false
+  # Настройка сети с автоматическим IP (Public Network - Bridge)
+  # Vagrant выберет доступный интерфейс для моста
+  config.vm.network "public_network",
+    auto_config: true,
+    use_dhcp_assigned_default_route: true
 
+  # Проброс порта 8080 с хоста на гостевую машину
+  config.vm.network "forwarded_port",
+    guest: 8080,
+    host: 8080,
+    host_ip: "127.0.0.1", # Слушаем только на localhost хоста
+    auto_correct: true
+
+  # Отключение синхронизации папок Vagrant по умолчанию
+  config.vm.synced_folder ".", "/vagrant", disabled: true # Изменено на /vagrant для ясности, но все равно отключено
+  # Можно раскомментировать и настроить, если нужна синхронизация:
+  # config.vm.synced_folder "../.", "/app", type: "virtualbox" # Пример
+
+  # Настройки SSH
+  config.ssh.insert_key = false      # Используем стандартный небезопасный ключ Vagrant
+  config.ssh.forward_agent = true    # Проброс SSH-агента для GitHub/GitLab и т.д.
+
+  # Настройки провайдера VirtualBox
   config.vm.provider "virtualbox" do |vb|
-    vb.name = "debian12_server_podman"
-    vb.memory = 12288
-    vb.cpus = 4
+    vb.name = "debian12_server_podman" # Имя ВМ в VirtualBox
+    vb.memory = 12288                  # 12 GB RAM
+    vb.cpus = 4                        # 4 CPU ядра
+
+    # Отключаем GUI VirtualBox для серверного режима
     vb.gui = false
-    
+
+    # Оптимизации производительности VirtualBox
     vb.customize ["modifyvm", :id, "--ioapic", "on"]
-    vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+    vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"] # Полезно для сети NAT, но может быть не нужно для public_network
+    vb.customize ["modifyvm", :id, "--nictype1", "virtio"]        # Использовать производительный сетевой адаптер VirtIO
   end
 
+  # Provisioning: установка и настройка ПО внутри ВМ
   config.vm.provision "shell", inline: <<-SHELL
+    # Обновляем список пакетов и систему
+    export DEBIAN_FRONTEND=noninteractive # Предотвращаем интерактивные диалоги apt
     apt-get update -y
-    apt-get install -y curl git podman podman-compose
-    
+    # apt-get upgrade -y # Можно раскомментировать для полного обновления
+
+    # Устанавливаем необходимые пакеты
+    apt-get install -y \
+      curl \
+      git \
+      podman \
+      podman-compose \
+      openssh-server \
+      python3 \
+      python3-pip \
+      sudo \
+      ca-certificates # Для HTTPS
+
+    # Настройка SSH-сервера для безопасности и удобства VS Code
+    # Запрещаем вход по паролю, разрешаем только по ключу
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+    sed -i 's/PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config # На случай, если уже было раскомментировано
+    # Перезапускаем SSH сервис для применения настроек
+    systemctl restart sshd
+
+    # Установка UV (менеджер пакетов Python) для пользователя vagrant
+    # Запускаем от имени пользователя vagrant
     sudo -u vagrant bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+
+    # Добавляем UV в PATH для пользователя vagrant и настраиваем редактор
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/vagrant/.bashrc
-    
+    echo 'export EDITOR=code' >> /home/vagrant/.bashrc # Для интеграции с VS Code (например, git commit)
+    # Применяем изменения к текущей сессии (не обязательно для provisioning, но полезно для отладки)
+    # sudo -u vagrant bash -c 'source /home/vagrant/.bashrc'
+
+    # Настройка Podman для пользователя vagrant (rootless)
     mkdir -p /home/vagrant/.config/containers
+    # Используем overlayfs драйвер для хранения
     echo -e '[storage]\ndriver = "overlay"' > /home/vagrant/.config/containers/storage.conf
-    
+    # Устанавливаем правильного владельца для конфигурационных файлов
+    chown -R vagrant:vagrant /home/vagrant/.config
+
+    # --- НАСТРОЙКА ПОЛЬЗОВАТЕЛЯ VAGRANT ДЛЯ PODMAN ---
+    # Добавляем пользователя в группу podman (может быть полезно для некоторых сценариев)
+    usermod -aG podman vagrant
+
+    # Разрешаем пользователю vagrant запускать podman через sudo без пароля
+    # Это может быть *не* нужно для чистого rootless режима, но полезно, если иногда нужны root-операции
+    # Если хотите строгий rootless, эту строку можно закомментировать
+    echo "vagrant ALL=(root) NOPASSWD: /usr/bin/podman" >> /etc/sudoers.d/vagrant_podman
+    chmod 0440 /etc/sudoers.d/vagrant_podman # Устанавливаем правильные права на файл sudoers
+
+    # <<< ИСПРАВЛЕНИЕ ПРЕДУПРЕЖДЕНИЯ PODMAN >>>
+    # Включаем lingering для пользователя vagrant, чтобы его службы (например, podman socket)
+    # могли работать даже когда он не залогинен.
+    loginctl enable-linger vagrant
+
+    # Очистка системы от ненужных пакетов и кэша apt
     apt-get autoremove -y
     apt-get clean
+    rm -rf /var/lib/apt/lists/*
+
+    echo "Provisioning завершен."
   SHELL
 
-  config.vm.post_up_message = "Сервер готов! Используйте 'vagrant ssh' для подключения"
+  # Сообщение после успешного запуска `vagrant up`
+  config.vm.post_up_message = <<-MESSAGE
+    =====================================================================
+    Виртуальная машина Debian 12 с Podman успешно настроена!
+
+    Имя хоста: #{config.vm.hostname}
+    IP адрес: (Будет назначен DHCP сервером вашей сети - проверьте вывод vagrant up)
+    RAM: 12288 MB
+    CPUs: 4
+
+    Подключение:
+    1. Обычное SSH:
+       vagrant ssh
+
+    2. Через VS Code (Remote - SSH):
+       a. Убедитесь, что установлено расширение "Remote - SSH".
+       b. Добавьте или обновите запись в вашем файле ~/.ssh/config:
+
+          Host vagrant-podman-server # Вы можете выбрать другое имя хоста
+            HostName 127.0.0.1      # Используем проброшенный порт
+            User vagrant
+            Port 2222              # Стандартный порт Vagrant SSH
+            UserKnownHostsFile /dev/null
+            StrictHostKeyChecking no
+            PasswordAuthentication no
+            IdentityFile #{Dir.home}/.vagrant.d/insecure_private_key # Стандартный ключ Vagrant
+            IdentitiesOnly yes
+            LogLevel FATAL
+            ForwardAgent yes       # Если вы настроили forward_agent = true
+
+       c. В VS Code: Нажмите F1 -> "Remote-SSH: Connect to Host..." -> выберите "vagrant-podman-server" (или ваше имя).
+
+    Проброшенные порты:
+    - Хост: 127.0.0.1:8080 -> Гость: 8080
+
+    Дополнительно:
+    - Podman настроен для пользователя 'vagrant'.
+    - Lingering включен для 'vagrant', предупреждение должно исчезнуть.
+    - Установлен менеджер пакетов Python 'uv'.
+    =====================================================================
+  MESSAGE
 end
