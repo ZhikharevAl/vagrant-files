@@ -17,6 +17,13 @@ Vagrant.configure("2") do |config|
     host: 8080,
     host_ip: "127.0.0.1", # Слушаем только на localhost хоста
     auto_correct: true
+  
+  config.vm.network "forwarded_port", 
+    guest: 4040, 
+    host: 4040, 
+    host_ip: "127.0.0.1", 
+    auto_correct: true
+
 
   # Отключение синхронизации папок Vagrant по умолчанию
   config.vm.synced_folder ".", "/vagrant", disabled: true # Изменено на /vagrant для ясности, но все равно отключено
